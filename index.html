@@ -85,6 +85,7 @@
     .section-head { display: flex; align-items: end; justify-content: space-between; gap: 10px; margin: 0 2px 12px; }
     h2 { font-size: 18px; letter-spacing: -.02em; }
     .hint { color: var(--muted); font-size: 12px; text-align: right; }
+    .hint-block { color: var(--muted); font-size: 12px; text-align: left; margin: -6px 2px 12px; }
     .roster { display: grid; gap: 9px; }
     .player { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.035); cursor: pointer; transition: background .15s, border-color .15s, transform .15s; }
     .player:active { transform: scale(.99); }
@@ -166,6 +167,10 @@
         <input id="interval" type="number" inputmode="numeric" min="1" max="90" value="5" aria-label="Substitution interval in minutes">
         <span>minutes</span>
       </div>
+      <div class="timer-settings">
+        <label for="fieldSizeLive">Players on field</label>
+        <input id="fieldSizeLive" type="number" inputmode="numeric" min="1" max="22" placeholder="No limit" aria-label="Number of players allowed on the field at once">
+      </div>
       <div class="selection" id="selection" aria-live="polite">
         <div class="selection-title">Substitution ready</div>
         <div class="selection-row">
@@ -197,16 +202,22 @@
     <section class="section" id="attendanceSection" aria-labelledby="attendanceTitle">
       <div class="section-head"><h2 id="attendanceTitle">Who's here today?</h2><span class="hint" id="attendanceHint">0 of 0 marked here</span></div>
       <div class="roster" id="attendanceRoster"></div>
+      <div class="timer-settings" style="margin-top:14px">
+        <label for="fieldSizeSetup">Players on field</label>
+        <input id="fieldSizeSetup" type="number" inputmode="numeric" min="1" max="22" placeholder="No limit" aria-label="Number of players allowed on the field at once">
+      </div>
       <button type="button" class="btn primary" id="startGameBtn" style="width:100%;margin-top:14px" disabled>Start game</button>
     </section>
 
     <section class="section" id="fieldSection" aria-labelledby="fieldTitle" hidden>
       <div class="section-head"><h2 id="fieldTitle">On the field</h2><button type="button" class="btn ghost small" id="suggestBtn">Suggest sub</button></div>
+      <p class="hint-block">Tap to flag a sub, double-tap to bench instantly</p>
       <div class="roster" id="fieldRoster"></div>
     </section>
 
     <section class="section" id="benchSection" aria-labelledby="benchTitle" hidden>
-      <div class="section-head"><h2 id="benchTitle">Bench</h2><span class="hint">Tap a player to send in</span></div>
+      <div class="section-head"><h2 id="benchTitle">Bench</h2></div>
+      <p class="hint-block">Tap to pick a partner, double-tap to send in instantly</p>
       <div class="roster" id="benchRoster"></div>
     </section>
 
@@ -226,6 +237,14 @@
     </div>
   </div>
 
+  <div class="sheet-backdrop" id="removeSheet" role="dialog" aria-modal="true" aria-labelledby="removeTitle">
+    <div class="sheet">
+      <h2 id="removeTitle">Remove player?</h2>
+      <p><span id="removeName"></span> will be removed from your roster. This can't be undone.</p>
+      <div class="sheet-actions"><button class="btn ghost" id="cancelRemove">Cancel</button><button class="btn danger" id="confirmRemove">Remove</button></div>
+    </div>
+  </div>
+
   <div class="sheet-backdrop" id="clearSheet" role="dialog" aria-modal="true" aria-labelledby="clearTitle">
     <div class="sheet">
       <h2 id="clearTitle">Reset</h2>
@@ -239,7 +258,7 @@
   <script>
     (() => {
       const STORAGE_KEY = 'touchline-sub-manager-v1';
-      const freshState = () => ({ players: [], history: [], intervalMin: 5, remaining: 300, running: false, matchSeconds: 0, selectedOut: null, selectedIn: null, autoOut: false, autoIn: false, lastTick: null, phase: 'setup' });
+      const freshState = () => ({ players: [], history: [], intervalMin: 5, remaining: 300, fieldSize: null, running: false, matchSeconds: 0, selectedOut: null, selectedIn: null, autoOut: false, autoIn: false, lastTick: null, phase: 'setup' });
       let state = load();
       let ticker = null;
 
@@ -250,7 +269,8 @@
         subCount: $('subCount'), selection: $('selection'), selectionCopy: $('selectionCopy'), selectionHint: $('selectionHint'), confirmSwap: $('confirmSwap'),
         history: $('historyList'), historySection: $('historySection'), error: $('formError'), toast: $('toast'),
         attendanceSection: $('attendanceSection'), attendanceList: $('attendanceRoster'), attendanceHint: $('attendanceHint'), startGameBtn: $('startGameBtn'),
-        timerCardSection: $('timerCardSection'), statsRow: $('statsRow'), fieldSection: $('fieldSection'), benchSection: $('benchSection')
+        timerCardSection: $('timerCardSection'), statsRow: $('statsRow'), fieldSection: $('fieldSection'), benchSection: $('benchSection'),
+        fieldSizeSetup: $('fieldSizeSetup'), fieldSizeLive: $('fieldSizeLive')
       };
 
       function load() {
@@ -306,6 +326,7 @@
           const presentCount = state.players.filter(p => p.present).length;
           refs.attendanceHint.textContent = `${presentCount} of ${state.players.length} marked here`;
           refs.startGameBtn.disabled = presentCount === 0;
+          refs.fieldSizeSetup.value = state.fieldSize ?? '';
           refs.historySection.hidden = true;
           return;
         }
@@ -315,12 +336,13 @@
         refs.toggle.textContent = state.running ? 'Pause timers' : (state.matchSeconds ? 'Resume timers' : 'Start timers');
         refs.match.textContent = formatTime(state.matchSeconds);
         refs.interval.value = state.intervalMin;
+        refs.fieldSizeLive.value = state.fieldSize ?? '';
 
         const onField = fieldPresent().sort(sortPlayers);
         const bench = benchPresent().sort(sortPlayers);
         refs.field.innerHTML = fieldBenchHtml(onField, true);
         refs.bench.innerHTML = fieldBenchHtml(bench, false);
-        refs.fieldCount.textContent = onField.length;
+        refs.fieldCount.textContent = state.fieldSize ? `${onField.length}/${state.fieldSize}` : onField.length;
         refs.benchCount.textContent = bench.length;
         refs.subCount.textContent = state.history.length;
         renderSelection();
@@ -380,6 +402,36 @@
         }).join('');
       }
 
+      function updateFieldSize(raw) {
+        const n = Number(raw);
+        state.fieldSize = (raw === '' || !Number.isFinite(n) || n <= 0) ? null : Math.min(22, Math.floor(n));
+        save(); render();
+      }
+
+      let lastTap = { id: null, time: 0 };
+      function handleRosterTap(id) {
+        const now = Date.now();
+        const isDouble = lastTap.id === id && (now - lastTap.time) < 350;
+        lastTap = isDouble ? { id: null, time: 0 } : { id, time: now };
+        if (isDouble) quickMove(id); else selectPlayer(id);
+      }
+
+      function quickMove(id) {
+        const p = playerById(id);
+        if (!p || !p.present) return;
+        if (p.onField) {
+          p.onField = false;
+          if (state.selectedOut === id) { state.selectedOut = null; state.autoOut = false; }
+          save(); render(); toast(`${p.name} moved to the bench`);
+        } else {
+          const cap = state.fieldSize;
+          if (cap && fieldPresent().length >= cap) { toast(`Field is full (${cap}/${cap}) — bench someone first`); return; }
+          p.onField = true;
+          if (state.selectedIn === id) { state.selectedIn = null; state.autoIn = false; }
+          save(); render(); toast(`${p.name} moved to the field`);
+        }
+      }
+
       function selectPlayer(id) {
         const p = playerById(id);
         if (!p || !p.present) return;
@@ -407,6 +459,8 @@
       function confirmSwap() {
         const outP = playerById(state.selectedOut), inP = playerById(state.selectedIn);
         if (!outP && inP) {
+          const cap = state.fieldSize;
+          if (cap && fieldPresent().length >= cap) { toast(`Field is full (${cap}/${cap}) — bench someone first`); return; }
           inP.onField = true;
           state.selectedIn = null; state.autoIn = false; state.autoOut = false;
           save(); render(); toast(`${inP.name} moved to the field`); return;
@@ -491,6 +545,15 @@
         save(); render(); toast(`${p?.name || 'Player'} removed`);
       }
 
+      let pendingRemoveId = null;
+      function requestRemove(id) {
+        const p = playerById(id);
+        if (!p) return;
+        pendingRemoveId = id;
+        $('removeName').textContent = `#${p.number} ${p.name}`;
+        $('removeSheet').classList.add('show');
+      }
+
       function parseImportLine(line) {
         const m = line.match(/^#?\s*(\d{1,3})\s*[,.\-:]?\s*(.+?)\s*$/);
         if (!m) return null;
@@ -558,7 +621,7 @@
 
       function attendanceClick(event) {
         const remove = event.target.closest('[data-remove-id]');
-        if (remove) { event.stopPropagation(); removePlayer(remove.dataset.removeId); return; }
+        if (remove) { event.stopPropagation(); requestRemove(remove.dataset.removeId); return; }
         const row = event.target.closest('[data-attend-id]');
         if (row) { const p = playerById(row.dataset.attendId); if (p) { p.present = !p.present; save(); render(); } }
       }
@@ -575,9 +638,9 @@
 
       function fieldBenchClick(event) {
         const remove = event.target.closest('[data-remove-id]');
-        if (remove) { event.stopPropagation(); removePlayer(remove.dataset.removeId); return; }
+        if (remove) { event.stopPropagation(); requestRemove(remove.dataset.removeId); return; }
         const row = event.target.closest('[data-player-id]');
-        if (row) selectPlayer(row.dataset.playerId);
+        if (row) handleRosterTap(row.dataset.playerId);
       }
       function fieldBenchKey(event) { if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-player-id]')) { event.preventDefault(); selectPlayer(event.target.dataset.playerId); } }
       refs.field.addEventListener('click', fieldBenchClick); refs.bench.addEventListener('click', fieldBenchClick);
@@ -599,6 +662,8 @@
         state.intervalMin = Math.min(90, Math.max(1, Number(refs.interval.value) || 5));
         state.remaining = state.intervalMin * 60; save(); render();
       });
+      refs.fieldSizeSetup.addEventListener('change', () => updateFieldSize(refs.fieldSizeSetup.value));
+      refs.fieldSizeLive.addEventListener('change', () => updateFieldSize(refs.fieldSizeLive.value));
       $('cancelSwap').addEventListener('click', () => { state.selectedOut = null; state.selectedIn = null; state.autoOut = false; state.autoIn = false; render(); });
       refs.confirmSwap.addEventListener('click', confirmSwap);
       refs.history.addEventListener('click', event => { if (event.target.closest('[data-undo-index]')) undoLast(); });
@@ -611,6 +676,13 @@
         $('clearSheet').classList.remove('show'); render(); toast('Team data cleared');
       });
       $('clearSheet').addEventListener('click', event => { if (event.target === $('clearSheet')) $('clearSheet').classList.remove('show'); });
+      $('cancelRemove').addEventListener('click', () => { pendingRemoveId = null; $('removeSheet').classList.remove('show'); });
+      $('removeSheet').addEventListener('click', event => { if (event.target === $('removeSheet')) { pendingRemoveId = null; $('removeSheet').classList.remove('show'); } });
+      $('confirmRemove').addEventListener('click', () => {
+        const id = pendingRemoveId; pendingRemoveId = null;
+        $('removeSheet').classList.remove('show');
+        if (id) removePlayer(id);
+      });
       document.addEventListener('visibilitychange', () => {
         if (document.hidden || !state.running) return;
         const now = Date.now(), delta = Math.floor((now - state.lastTick) / 1000);
